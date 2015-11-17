@@ -9,7 +9,7 @@ from django.db.models.sql import query, EmptyResultSet
 from django.utils import encoding
 
 from .compat import DEFAULT_TIMEOUT, FOREVER
-from .invalidation import invalidator, flush_key, make_key, byid, cache, flush_key_model
+from .invalidation import make_invalidator, flush_key, make_key, byid, cache, flush_key_model
 
 
 class NullHandler(logging.Handler):
@@ -26,6 +26,13 @@ CACHE_PREFIX = getattr(settings, 'CACHE_PREFIX', '')
 FETCH_BY_ID = getattr(settings, 'FETCH_BY_ID', False)
 CACHE_EMPTY_QUERYSETS = getattr(settings, 'CACHE_EMPTY_QUERYSETS', False)
 TIMEOUT = getattr(settings, 'CACHE_COUNT_TIMEOUT', NO_CACHE)
+CACHE_TIMEOUT = getattr(settings, 'CACHE_TIMEOUT', DEFAULT_TIMEOUT)
+
+if CACHE_TIMEOUT is DEFAULT_TIMEOUT:
+    # redis doesn't understand django's default timeout constant
+    CACHE_TIMEOUT = 300
+
+invalidator = make_invalidator(CACHE_TIMEOUT)
 
 
 class CachingManager(models.Manager):
@@ -60,7 +67,7 @@ class CachingManager(models.Manager):
         return CachingRawQuerySet(raw_query, self.model, params=params,
                                   using=self._db, *args, **kwargs)
 
-    def cache(self, timeout=DEFAULT_TIMEOUT):
+    def cache(self, timeout=CACHE_TIMEOUT):
         return self.get_queryset().cache(timeout)
 
     def no_cache(self):
@@ -75,7 +82,7 @@ class CacheMachine(object):
     called to get an iterator over some database results.
     """
 
-    def __init__(self, query_string, iter_function, timeout=DEFAULT_TIMEOUT, db='default', model_name=None):
+    def __init__(self, query_string, iter_function, timeout=CACHE_TIMEOUT, db='default', model_name=None):
         self.query_string = query_string
         self.iter_function = iter_function
         self.timeout = timeout
@@ -137,7 +144,7 @@ class CachingQuerySet(models.query.QuerySet):
 
     def __init__(self, *args, **kw):
         super(CachingQuerySet, self).__init__(*args, **kw)
-        self.timeout = DEFAULT_TIMEOUT
+        self.timeout = CACHE_TIMEOUT
 
     def flush_key(self):
         return flush_key(self.query_key())
@@ -216,7 +223,7 @@ class CachingQuerySet(models.query.QuerySet):
         else:
             return cached_with(self, super_count, query_string, TIMEOUT)
 
-    def cache(self, timeout=DEFAULT_TIMEOUT):
+    def cache(self, timeout=CACHE_TIMEOUT):
         qs = self._clone()
         qs.timeout = timeout
         return qs
@@ -265,7 +272,7 @@ class CachingMixin(object):
 class CachingRawQuerySet(models.query.RawQuerySet):
 
     def __init__(self, *args, **kw):
-        timeout = kw.pop('timeout', DEFAULT_TIMEOUT)
+        timeout = kw.pop('timeout', CACHE_TIMEOUT)
         super(CachingRawQuerySet, self).__init__(*args, **kw)
         self.timeout = timeout
 
@@ -286,7 +293,7 @@ def _function_cache_key(key):
     return make_key('f:%s' % key, with_locale=True)
 
 
-def cached(function, key_, duration=DEFAULT_TIMEOUT):
+def cached(function, key_, duration=CACHE_TIMEOUT):
     """Only calls the function if ``key`` is not already in the cache."""
     key = _function_cache_key(key_)
     val = cache.get(key)
@@ -299,7 +306,7 @@ def cached(function, key_, duration=DEFAULT_TIMEOUT):
     return val
 
 
-def cached_with(obj, f, f_key, timeout=DEFAULT_TIMEOUT):
+def cached_with(obj, f, f_key, timeout=CACHE_TIMEOUT):
     """Helper for caching a function call within an object's flush list."""
 
     try:

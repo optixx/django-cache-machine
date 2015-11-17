@@ -10,6 +10,7 @@ from django.core.cache import get_cache
 from django.core.cache.backends.base import InvalidCacheBackendError
 from django.utils import encoding, translation
 from django.utils.six.moves.urllib.parse import parse_qsl
+from .compat import DEFAULT_TIMEOUT
 
 try:
     import redis as redislib
@@ -81,6 +82,8 @@ def safe_redis(return_type):
 
 
 class Invalidator(object):
+    def __init__(self, flushlist_ttl):
+        self.flushlist_ttl = flushlist_ttl
 
     def invalidate_keys(self, keys):
         """Invalidate all the flush lists named by the list of ``keys``."""
@@ -148,7 +151,7 @@ class Invalidator(object):
                 flush_lists[key] = set(list_)
             else:
                 flush_lists[key].update(list_)
-        cache.set_many(flush_lists)
+        cache.set_many(flush_lists, timeout=self.flushlist_ttl)
 
     def get_flush_lists(self, keys):
         """Return a set of object keys from the lists in `keys`."""
@@ -162,6 +165,9 @@ class Invalidator(object):
 
 
 class RedisInvalidator(Invalidator):
+    def __init__(self, flushlist_ttl, redis):
+        Invalidator.__init__(self, flushlist_ttl)
+        self.redis = redis
 
     def safe_key(self, key):
         if ' ' in key or '\n' in key:
@@ -172,19 +178,22 @@ class RedisInvalidator(Invalidator):
     @safe_redis(None)
     def add_to_flush_list(self, mapping):
         """Update flush lists with the {flush_key: [query_key,...]} map."""
-        pipe = redis.pipeline(transaction=False)
+        pipe = self.redis.pipeline(transaction=False)
         for key, list_ in mapping.items():
+            key = self.safe_key(key)
             for query_key in list_:
-                pipe.sadd(self.safe_key(key), query_key)
+                pipe.sadd(key, query_key)
+            if self.flushlist_ttl:
+                pipe.expire(key, self.flushlist_ttl)
         pipe.execute()
 
     @safe_redis(set)
     def get_flush_lists(self, keys):
-        return redis.sunion(map(self.safe_key, keys))
+        return self.redis.sunion(map(self.safe_key, keys))
 
     @safe_redis(None)
     def clear_flush_lists(self, keys):
-        redis.delete(*map(self.safe_key, keys))
+        self.redis.delete(*map(self.safe_key, keys))
 
 
 class NullInvalidator(Invalidator):
@@ -246,11 +255,12 @@ def get_redis_backend():
     return redislib.Redis(host=host, port=port, db=db, password=password,
                           socket_timeout=socket_timeout)
 
-
-if getattr(settings, 'CACHE_MACHINE_NO_INVALIDATION', False):
-    invalidator = NullInvalidator()
-elif getattr(settings, 'CACHE_MACHINE_USE_REDIS', False):
-    redis = get_redis_backend()
-    invalidator = RedisInvalidator()
-else:
-    invalidator = Invalidator()
+def make_invalidator(flushlist_ttl):
+    if getattr(settings, 'CACHE_MACHINE_NO_INVALIDATION', False):
+        invalidator = NullInvalidator(flushlist_ttl)
+    elif getattr(settings, 'CACHE_MACHINE_USE_REDIS', False):
+        redis = get_redis_backend()
+        invalidator = RedisInvalidator(flushlist_ttl, redis)
+    else:
+        invalidator = Invalidator(flushlist_ttl)
+    return invalidator
