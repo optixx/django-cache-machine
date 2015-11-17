@@ -27,12 +27,18 @@ FETCH_BY_ID = getattr(settings, 'FETCH_BY_ID', False)
 CACHE_EMPTY_QUERYSETS = getattr(settings, 'CACHE_EMPTY_QUERYSETS', False)
 TIMEOUT = getattr(settings, 'CACHE_COUNT_TIMEOUT', NO_CACHE)
 CACHE_TIMEOUT = getattr(settings, 'CACHE_TIMEOUT', DEFAULT_TIMEOUT)
+ENABLE_FLUSHLIST_TTL = getattr(settings, 'ENABLE_FLUSHLIST_TTL', False)
 
-if CACHE_TIMEOUT is DEFAULT_TIMEOUT:
-    # redis doesn't understand django's default timeout constant
-    CACHE_TIMEOUT = 300
+if ENABLE_FLUSHLIST_TTL:
+    FLUSHLIST_TTL = CACHE_TIMEOUT
+    if CACHE_TIMEOUT is DEFAULT_TIMEOUT:
+        # redis doesn't understand django's default timeout constant
+        FLUSHLIST_TTL = 300
+else:
+    FLUSHLIST_TTL = None
 
-invalidator = make_invalidator(CACHE_TIMEOUT)
+
+invalidator = make_invalidator(FLUSHLIST_TTL)
 
 
 class CachingManager(models.Manager):
